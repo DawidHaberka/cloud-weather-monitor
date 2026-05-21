@@ -1,0 +1,31 @@
+# Smart Home IoT Weather Monitor
+
+This project implements an indoor/outdoor weather monitoring system using an M5Stack IoT device, Google BigQuery, Google Cloud, Streamlit, and AI-based assistant functionality.
+
+## Architecture
+
+The system follows a three-tier architecture:
+
+1. Data layer: Google BigQuery stores sensor and weather measurements.
+2. Middleware/services layer: Google Cloud services are used for cloud deployment and assistant logic.
+3. UI layer: Streamlit dashboard and M5Stack device interface.
+
+## Features
+
+- Indoor temperature and humidity monitoring
+- Outdoor weather data
+- CO2 and TVOC air quality monitoring
+- Motion detection
+- BigQuery data storage
+- Streamlit cloud dashboard
+- Historical charts
+- Alert system
+- AI home summary
+- Voice/text assistant
+
+## Dashboard
+
+The dashboard is located in:
+
+```text
+dashboard/app.py
