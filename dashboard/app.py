@@ -37,7 +37,7 @@ TABLE_ID = os.getenv(
     "durable-will-487916-n1.Lab4_IoT_datasets.weather-records",
 )
 
-REFRESH_INTERVAL_MS = 10_000
+REFRESH_INTERVAL_MS = 300_000
 LOW_HUMIDITY_THRESHOLD = 40
 HIGH_CO2_THRESHOLD = 1000
 HIGH_TVOC_THRESHOLD = 300
@@ -45,7 +45,7 @@ HIGH_TVOC_THRESHOLD = 300
 # Optional real AI summary using Google Gemini.
 # Add GEMINI_API_KEY to your environment variables to activate it.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-USE_GEMINI_SUMMARY = os.getenv("USE_GEMINI_SUMMARY", "true").lower() == "true"
+USE_GEMINI_SUMMARY = os.getenv("USE_GEMINI_SUMMARY", "false").lower() == "true"
 GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
 
 # Load enough rows for one month of charts and date-based questions.
@@ -287,14 +287,10 @@ def generate_ai_home_summary_cached(
     refresh_token: int,
 ) -> str:
     """
-    Generate the AI Home Summary.
+    Generate AI Home Summary.
 
-    This function is intentionally NOT cached. Streamlit caching was causing old,
-    broken Gemini outputs such as "Inside, you're" to remain visible after pressing
-    Regenerate AI summary.
-
-    If Gemini returns a broken, too short, incomplete, or letter-like answer, the
-    dashboard automatically falls back to a safe deterministic summary.
+    Gemini is optional. If Gemini is disabled, unavailable, or returns a weak/broken
+    answer, the dashboard uses a stable rule-based fallback summary.
     """
     fallback_row = pd.Series({
         "indoor_temp": indoor_temp,
@@ -319,19 +315,11 @@ def generate_ai_home_summary_cached(
         prompt = f"""
 You are an AI home climate assistant for a smart home IoT dashboard.
 
-Task:
-Write a short home condition summary based ONLY on the sensor data below.
-
-Strict rules:
-- Return exactly 3 complete sentences.
-- Each sentence must be complete and end with a period.
-- Do not write a letter.
-- Do not use greetings.
-- Do not use signatures.
-- Do not use bullet points.
-- Do not start with "Inside, you're".
-- Do not invent values.
-- Mention indoor comfort, air quality, and outdoor recommendation.
+Write exactly 3 complete sentences based only on the sensor data below.
+Do not invent values.
+Do not write a letter.
+Do not use greetings, signatures, or bullet points.
+Mention indoor comfort, air quality, and outdoor recommendation.
 
 Sensor data:
 Indoor temperature: {indoor_temp:.1f}°C
@@ -361,7 +349,6 @@ Current alerts: {alerts_text}
 
         ai_text_lower = ai_text.lower().strip()
 
-        # Very defensive validation: reject any broken/incomplete/irrelevant AI output.
         too_short = len(ai_text.split()) < 30
         too_long = len(ai_text.split()) > 120
         bad_start = ai_text_lower.startswith(("inside, you're", "it's", "dear", "hello", "hi "))
@@ -373,7 +360,6 @@ Current alerts: {alerts_text}
             ("you're", "you are", "is", "are", "and", "but", "with", "to", ",", ":", ";")
         )
         missing_sentence_end = not ai_text.endswith((".", "!", "?"))
-        missing_keywords = not any(word in ai_text_lower for word in ["co2", "co₂", "tvoc", "air quality", "ventilat"])
 
         if (
             ai_text
@@ -383,7 +369,6 @@ Current alerts: {alerts_text}
             and not looks_like_letter
             and not incomplete_end
             and not missing_sentence_end
-            and not missing_keywords
         ):
             return ai_text
 
@@ -752,7 +737,7 @@ with alert_col:
 
 with ai_col:
     st.subheader("🤖 AI Home Summary")
-    st.caption("AI summary v3: Gemini is used when available; broken outputs automatically fall back to a safe rule-based summary.")
+    st.caption("Stable summary is shown by default. Gemini can be enabled later using GEMINI_API_KEY and USE_GEMINI_SUMMARY=true.")
 
     if "summary_refresh_token" not in st.session_state:
         st.session_state["summary_refresh_token"] = 0
@@ -782,101 +767,89 @@ with ai_col:
 st.markdown("---")
 
 # AI assistant
-st.subheader("🎙️ AI Voice Assistant")
+st.subheader("🎙️ AI Assistant")
 st.caption(
-    "Use either manual mode or microphone mode. In microphone mode, the spoken question is interpreted directly "
-    "and does not depend on the selected date or example question."
+    "Choose or type a question manually, or use the microphone below. "
+    "Manual questions can use the selected date. Voice questions should include the date in the spoken sentence if needed."
 )
 
 available_dates = sorted(df["date_only"].dropna().unique())
 default_assistant_date = available_dates[-1] if available_dates else date.today()
 
-manual_tab, voice_tab = st.tabs(["Manual question", "Voice question"])
+assistant_date = st.date_input(
+    "Choose date for analytical questions",
+    value=default_assistant_date,
+    min_value=available_dates[0] if available_dates else None,
+    max_value=available_dates[-1] if available_dates else None,
+    help="Used for manual analytical questions. Voice questions ignore this field unless the date is spoken.",
+    key="assistant_date",
+)
 
-with manual_tab:
-    st.markdown("### Manual analysis")
-    manual_date = st.date_input(
-        "Choose date for analytical questions",
-        value=default_assistant_date,
-        min_value=available_dates[0] if available_dates else None,
-        max_value=available_dates[-1] if available_dates else None,
-        help="This date is used only in manual mode.",
-        key="manual_assistant_date",
+selected_date_label = assistant_date.strftime("%B %d, %Y")
+example_questions = [
+    "What is the temperature now?",
+    "What is the humidity now?",
+    "Is air quality good?",
+    "Was motion detected?",
+    "Should I take an umbrella?",
+    f"What was the average temperature on {selected_date_label}?",
+    f"What was the minimum temperature on {selected_date_label}?",
+    f"What was the maximum temperature on {selected_date_label}?",
+    f"What was the average humidity on {selected_date_label}?",
+    f"What was the maximum CO2 level on {selected_date_label}?",
+]
+
+st.markdown("### Manual question")
+selected_question = st.selectbox("Choose a question", example_questions)
+manual_question = st.text_input("Or type your own question", value=selected_question)
+read_answer_aloud = st.checkbox("Read answer aloud", value=True, key="read_answer_aloud")
+
+if st.button("Ask assistant"):
+    manual_answer = answer_assistant_question(manual_question, latest, df, selected_date=assistant_date)
+    st.session_state["last_assistant_answer"] = manual_answer
+    st.success(manual_answer)
+    speak_text_browser(manual_answer, enabled=read_answer_aloud)
+
+st.markdown("### Voice question")
+st.caption("Record a full question, for example: 'What is the temperature now?' or 'What was the average temperature on May 18?'")
+
+spoken_question = None
+
+if MIC_RECORDER_AVAILABLE:
+    spoken_question = speech_to_text(
+        language="en",
+        use_container_width=True,
+        just_once=True,
+        key="speech_to_text_single_mode",
     )
 
-    selected_date_label = manual_date.strftime("%B %d, %Y")
-    manual_questions = [
-        "What is the temperature now?",
-        "What is the humidity now?",
-        "Is air quality good?",
-        "Was motion detected?",
-        "Should I take an umbrella?",
-        f"What was the average temperature on {selected_date_label}?",
-        f"What was the minimum temperature on {selected_date_label}?",
-        f"What was the maximum temperature on {selected_date_label}?",
-        f"What was the average humidity on {selected_date_label}?",
-        f"What was the maximum CO2 level on {selected_date_label}?",
-    ]
-
-    selected_manual_question = st.selectbox("Choose a question", manual_questions)
-    manual_question = st.text_input("Or type your own manual question", value=selected_manual_question)
-    read_manual_answer = st.checkbox("Read manual answer aloud", value=True, key="read_manual_answer")
-
-    if st.button("Ask manual assistant"):
-        manual_answer = answer_assistant_question(manual_question, latest, df, selected_date=manual_date)
-        st.session_state["last_manual_answer"] = manual_answer
-        st.success(manual_answer)
-        speak_text_browser(manual_answer, enabled=read_manual_answer)
-
-    if "last_manual_answer" in st.session_state:
-        st.markdown("**Last manual answer:**")
-        st.info(st.session_state["last_manual_answer"])
-
-with voice_tab:
-    st.markdown("### Microphone question")
-    st.info(
-        "In this mode, ask the full question with your voice, for example: "
-        "'What was the average temperature on May 18?' or 'Is air quality good?'"
+    if spoken_question:
+        st.session_state["last_spoken_question"] = spoken_question
+        st.success(f"Recognized question: {spoken_question}")
+else:
+    st.warning(
+        "Microphone input is not installed. Add `streamlit-mic-recorder` to requirements.txt "
+        "and run: `pip install streamlit-mic-recorder`."
     )
 
-    read_voice_answer = st.checkbox("Read voice answer aloud", value=True, key="read_voice_answer")
-    spoken_question = None
+voice_question = st.session_state.get("last_spoken_question", "")
 
-    if MIC_RECORDER_AVAILABLE:
-        spoken_question = speech_to_text(
-            language="en",
-            use_container_width=True,
-            just_once=True,
-            key="speech_to_text_voice_mode",
-        )
-        if spoken_question:
-            st.session_state["last_spoken_question"] = spoken_question
-            st.success(f"Recognized question: {spoken_question}")
+if voice_question:
+    st.text_area("Recognized voice question", value=voice_question, height=80, disabled=True)
+
+if st.button("Ask from voice"):
+    if not voice_question:
+        st.warning("Please record a voice question first.")
     else:
-        st.warning(
-            "Microphone input is not installed. Add `streamlit-mic-recorder` to requirements.txt "
-            "and run: `pip install streamlit-mic-recorder`."
-        )
+        # Voice mode ignores selected date. The user should say the date in the question if needed.
+        voice_answer = answer_assistant_question(voice_question, latest, df, selected_date=None)
+        st.session_state["last_assistant_answer"] = voice_answer
+        st.success(voice_answer)
+        speak_text_browser(voice_answer, enabled=read_answer_aloud)
 
-    voice_question = st.session_state.get("last_spoken_question", "")
-
-    if voice_question:
-        st.text_area("Recognized voice question", value=voice_question, height=90, disabled=True)
-
-    if st.button("Ask voice assistant"):
-        if not voice_question:
-            st.warning("Please record a voice question first.")
-        else:
-            # Voice mode deliberately ignores manual selected date/question.
-            # For date-based analysis, the user must say the date in the voice question.
-            voice_answer = answer_assistant_question(voice_question, latest, df, selected_date=None)
-            st.session_state["last_voice_answer"] = voice_answer
-            st.success(voice_answer)
-            speak_text_browser(voice_answer, enabled=read_voice_answer)
-
-    if "last_voice_answer" in st.session_state:
-        st.markdown("**Last voice answer:**")
-        st.info(st.session_state["last_voice_answer"])
+if "last_assistant_answer" in st.session_state:
+    st.markdown("**Last assistant answer:**")
+    st.info(st.session_state["last_assistant_answer"])
 
 st.markdown("---")
 
