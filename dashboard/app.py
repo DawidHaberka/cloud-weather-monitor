@@ -17,11 +17,11 @@ except ImportError:
     MIC_RECORDER_AVAILABLE = False
 
 try:
-    from google import genai
-    VERTEX_AI_AVAILABLE = True
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
 except ImportError:
     genai = None
-    VERTEX_AI_AVAILABLE = False
+    GEMINI_AVAILABLE = False
 
 # =========================================================
 # CONFIGURATION
@@ -42,12 +42,11 @@ LOW_HUMIDITY_THRESHOLD = 40
 HIGH_CO2_THRESHOLD = 1000
 HIGH_TVOC_THRESHOLD = 300
 
-# Optional real AI summary using Google Gemini.
+# Optional real AI summary using Gemini API.
 # Add GEMINI_API_KEY to your environment variables to activate it.
-USE_VERTEX_AI_SUMMARY = os.getenv("USE_VERTEX_AI_SUMMARY", "false").lower() == "true"
-VERTEX_PROJECT_ID = os.getenv("VERTEX_PROJECT_ID", PROJECT_ID)
-VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
-VERTEX_MODEL_NAME = os.getenv("VERTEX_MODEL_NAME", "gemini-2.0-flash")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+USE_GEMINI_SUMMARY = os.getenv("USE_GEMINI_SUMMARY", "false").lower() == "true"
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 
 # Load enough rows for one month of charts and date-based questions.
 QUERY_DAYS_BACK = 35
@@ -288,9 +287,9 @@ def generate_ai_home_summary_cached(
     refresh_token: int,
 ) -> str:
     """
-    Generate AI Home Summary using Vertex AI Gemini.
+    Generate AI Home Summary using Gemini API.
 
-    If Vertex AI is disabled, unavailable, or returns a weak answer,
+    If Gemini is disabled, unavailable, or returns a weak answer,
     the dashboard uses a stable rule-based fallback summary.
     """
     fallback_row = pd.Series({
@@ -306,15 +305,12 @@ def generate_ai_home_summary_cached(
 
     fallback_summary = generate_fallback_summary(fallback_row)
 
-    if not (USE_VERTEX_AI_SUMMARY and VERTEX_AI_AVAILABLE):
+    if not (USE_GEMINI_SUMMARY and GEMINI_AVAILABLE and GEMINI_API_KEY):
         return fallback_summary
 
     try:
-        client = genai.Client(
-            vertexai=True,
-            project=VERTEX_PROJECT_ID,
-            location=VERTEX_LOCATION,
-        )
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
 
         prompt = f"""
 You are an AI home climate assistant for a smart home IoT dashboard.
@@ -329,6 +325,7 @@ Rules:
 - Mention indoor comfort, air quality, and outdoor recommendation.
 - If air quality is poor, recommend ventilation.
 - If outdoor weather suggests rain or storm, recommend an umbrella.
+- Keep the tone clear, practical, and concise.
 
 Sensor data:
 Indoor temperature: {indoor_temp:.1f}°C
@@ -343,10 +340,7 @@ Motion detected: {"yes" if motion_detected == 1 else "no"}
 Current alerts: {alerts_text}
 """
 
-        response = client.models.generate_content(
-            model=VERTEX_MODEL_NAME,
-            contents=prompt,
-        )
+        response = model.generate_content(prompt)
 
         ai_text = ""
         if response is not None and getattr(response, "text", None):
@@ -378,6 +372,7 @@ Current alerts: {alerts_text}
         return fallback_summary
 
     except Exception:
+        # Keep the UI stable by showing fallback summary if Gemini is unavailable.
         return fallback_summary
 
 
@@ -740,7 +735,7 @@ with alert_col:
 
 with ai_col:
     st.subheader("🤖 AI Home Summary")
-    st.caption("Generated with Vertex AI Gemini when enabled; otherwise a stable rule-based fallback is used.")
+    st.caption("Generated with Gemini API when enabled; otherwise a stable rule-based fallback is used.")
     
     if "summary_refresh_token" not in st.session_state:
         st.session_state["summary_refresh_token"] = 0
