@@ -17,11 +17,11 @@ except ImportError:
     MIC_RECORDER_AVAILABLE = False
 
 try:
-    import google.generativeai as genai
-    GEMINI_AVAILABLE = True
+    from google import genai
+    VERTEX_AI_AVAILABLE = True
 except ImportError:
     genai = None
-    GEMINI_AVAILABLE = False
+    VERTEX_AI_AVAILABLE = False
 
 # =========================================================
 # CONFIGURATION
@@ -44,9 +44,10 @@ HIGH_TVOC_THRESHOLD = 300
 
 # Optional real AI summary using Google Gemini.
 # Add GEMINI_API_KEY to your environment variables to activate it.
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-USE_GEMINI_SUMMARY = os.getenv("USE_GEMINI_SUMMARY", "false").lower() == "true"
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
+USE_VERTEX_AI_SUMMARY = os.getenv("USE_VERTEX_AI_SUMMARY", "false").lower() == "true"
+VERTEX_PROJECT_ID = os.getenv("VERTEX_PROJECT_ID", PROJECT_ID)
+VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1")
+VERTEX_MODEL_NAME = os.getenv("VERTEX_MODEL_NAME", "gemini-2.0-flash")
 
 # Load enough rows for one month of charts and date-based questions.
 QUERY_DAYS_BACK = 35
@@ -287,10 +288,10 @@ def generate_ai_home_summary_cached(
     refresh_token: int,
 ) -> str:
     """
-    Generate AI Home Summary.
+    Generate AI Home Summary using Vertex AI Gemini.
 
-    Gemini is optional. If Gemini is disabled, unavailable, or returns a weak/broken
-    answer, the dashboard uses a stable rule-based fallback summary.
+    If Vertex AI is disabled, unavailable, or returns a weak answer,
+    the dashboard uses a stable rule-based fallback summary.
     """
     fallback_row = pd.Series({
         "indoor_temp": indoor_temp,
@@ -305,21 +306,29 @@ def generate_ai_home_summary_cached(
 
     fallback_summary = generate_fallback_summary(fallback_row)
 
-    if not (USE_GEMINI_SUMMARY and GEMINI_AVAILABLE and GEMINI_API_KEY):
+    if not (USE_VERTEX_AI_SUMMARY and VERTEX_AI_AVAILABLE):
         return fallback_summary
 
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        client = genai.Client(
+            vertexai=True,
+            project=VERTEX_PROJECT_ID,
+            location=VERTEX_LOCATION,
+        )
 
         prompt = f"""
 You are an AI home climate assistant for a smart home IoT dashboard.
 
+Task:
 Write exactly 3 complete sentences based only on the sensor data below.
-Do not invent values.
-Do not write a letter.
-Do not use greetings, signatures, or bullet points.
-Mention indoor comfort, air quality, and outdoor recommendation.
+
+Rules:
+- Do not invent values.
+- Do not write a letter.
+- Do not use greetings, signatures, or bullet points.
+- Mention indoor comfort, air quality, and outdoor recommendation.
+- If air quality is poor, recommend ventilation.
+- If outdoor weather suggests rain or storm, recommend an umbrella.
 
 Sensor data:
 Indoor temperature: {indoor_temp:.1f}°C
@@ -334,13 +343,9 @@ Motion detected: {"yes" if motion_detected == 1 else "no"}
 Current alerts: {alerts_text}
 """
 
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.7,
-                "top_p": 0.9,
-                "max_output_tokens": 220,
-            },
+        response = client.models.generate_content(
+            model=VERTEX_MODEL_NAME,
+            contents=prompt,
         )
 
         ai_text = ""
@@ -349,12 +354,11 @@ Current alerts: {alerts_text}
 
         ai_text_lower = ai_text.lower().strip()
 
-        too_short = len(ai_text.split()) < 30
+        too_short = len(ai_text.split()) < 25
         too_long = len(ai_text.split()) > 120
-        bad_start = ai_text_lower.startswith(("inside, you're", "it's", "dear", "hello", "hi "))
         looks_like_letter = any(
             phrase in ai_text_lower
-            for phrase in ["sincerely", "regards", "best regards", "aimee", "christine davis"]
+            for phrase in ["sincerely", "regards", "best regards", "dear "]
         )
         incomplete_end = ai_text_lower.endswith(
             ("you're", "you are", "is", "are", "and", "but", "with", "to", ",", ":", ";")
@@ -365,7 +369,6 @@ Current alerts: {alerts_text}
             ai_text
             and not too_short
             and not too_long
-            and not bad_start
             and not looks_like_letter
             and not incomplete_end
             and not missing_sentence_end
@@ -737,8 +740,8 @@ with alert_col:
 
 with ai_col:
     st.subheader("🤖 AI Home Summary")
-    st.caption("Stable summary is shown by default. Gemini can be enabled later using GEMINI_API_KEY and USE_GEMINI_SUMMARY=true.")
-
+    st.caption("Generated with Vertex AI Gemini when enabled; otherwise a stable rule-based fallback is used.")
+    
     if "summary_refresh_token" not in st.session_state:
         st.session_state["summary_refresh_token"] = 0
 
