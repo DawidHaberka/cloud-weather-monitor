@@ -1,4 +1,5 @@
 import os
+import requests
 import re
 import html
 import json
@@ -506,6 +507,25 @@ Refresh token: {refresh_token}
     return ask_gemini(prompt, fallback)
 
 
+
+API_BASE_URL = os.getenv("API_BASE_URL", "").rstrip("/")
+
+def ask_middleware_api(question: str, selected_date=None) -> str:
+    """Call FastAPI middleware deployed on Cloud Run."""
+    if not API_BASE_URL or not question or not question.strip():
+        return ""
+
+    try:
+        response = requests.post(
+            f"{API_BASE_URL}/ask",
+            json={"question": question, "selected_date": selected_date},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json().get("answer", "")
+    except Exception:
+        return ""
+
 def generate_ai_assistant_answer(question: str, df: pd.DataFrame, latest: pd.Series) -> str:
     """Gemini-based general assistant over sensor data, with compact evidence context."""
     q = question.strip()
@@ -1009,7 +1029,8 @@ with manual_col2:
     read_manual_answer = st.toggle("🔊 Read aloud", value=True, key="read_manual_answer")
 
 if ask_manual:
-    assistant_answer = generate_ai_assistant_answer(manual_question, df, latest)
+    api_answer = ask_middleware_api(manual_question)
+    assistant_answer = api_answer or generate_ai_assistant_answer(manual_question, df, latest)
     st.session_state["last_assistant_answer"] = assistant_answer
     st.success(assistant_answer)
     speak_text_browser(assistant_answer, enabled=read_manual_answer)
@@ -1040,7 +1061,8 @@ if MIC_RECORDER_AVAILABLE:
     )
 
     if spoken_question:
-        voice_answer = generate_ai_assistant_answer(spoken_question, df, latest)
+        api_answer = ask_middleware_api(spoken_question)
+        voice_answer = api_answer or generate_ai_assistant_answer(spoken_question, df, latest)
         st.session_state["last_voice_answer"] = voice_answer
         st.success(voice_answer)
         speak_text_browser(voice_answer, enabled=read_voice_answer)
