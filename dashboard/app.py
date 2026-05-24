@@ -1,6 +1,7 @@
 import os
 import re
 import html
+import json
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -124,6 +125,31 @@ st.markdown(
         }
         .ai-box * {
             color: #111827 !important;
+        }
+
+        .section-card {
+            background-color: #ffffff;
+            padding: 1rem;
+            border-radius: 0.9rem;
+            border: 1px solid #e5e7eb;
+            margin-bottom: 1rem;
+        }
+        .voice-box {
+            background-color: #f9fafb;
+            padding: 1rem;
+            border-radius: 0.9rem;
+            border: 1px solid #e5e7eb;
+        }
+        div[data-testid="stButton"] > button {
+            border-radius: 0.75rem;
+            font-weight: 700;
+            border: 1px solid #d1d5db;
+            padding: 0.45rem 0.9rem;
+        }
+        div[data-testid="stButton"] > button[kind="primary"] {
+            background-color: #111827;
+            color: white;
+            border: 1px solid #111827;
         }
     </style>
     """,
@@ -374,6 +400,183 @@ Current alerts: {alerts_text}
     except Exception:
         # Keep the UI stable by showing fallback summary if Gemini is unavailable.
         return fallback_summary
+
+
+def build_stats_context(df: pd.DataFrame, label: str, period_df: pd.DataFrame) -> str:
+    """Create compact factual context for Gemini based only on available data."""
+    if period_df.empty:
+        return f"No data available for {label}."
+
+    stats = {
+        "period": label,
+        "measurements": int(len(period_df)),
+        "start": str(period_df["datetime"].min()),
+        "end": str(period_df["datetime"].max()),
+        "indoor_temp_avg": round(float(period_df["indoor_temp"].mean()), 2),
+        "indoor_temp_min": round(float(period_df["indoor_temp"].min()), 2),
+        "indoor_temp_max": round(float(period_df["indoor_temp"].max()), 2),
+        "outdoor_temp_avg": round(float(period_df["outdoor_temp"].mean()), 2),
+        "indoor_humidity_avg": round(float(period_df["indoor_humidity"].mean()), 2),
+        "indoor_humidity_min": round(float(period_df["indoor_humidity"].min()), 2),
+        "indoor_humidity_max": round(float(period_df["indoor_humidity"].max()), 2),
+        "co2_avg": round(float(period_df["indoor_co2"].mean()), 2),
+        "co2_max": round(float(period_df["indoor_co2"].max()), 2),
+        "tvoc_avg": round(float(period_df["indoor_tvoc"].mean()), 2),
+        "tvoc_max": round(float(period_df["indoor_tvoc"].max()), 2),
+        "motion_events": int(period_df["motion_detected"].fillna(0).sum()),
+        "most_common_weather": str(period_df["outdoor_weather"].mode().iloc[0]) if not period_df["outdoor_weather"].mode().empty else "unknown",
+    }
+    return json.dumps(stats, indent=2)
+
+
+def select_summary_period(df: pd.DataFrame, period: str, selected_day: date | None = None) -> tuple[str, pd.DataFrame]:
+    """Return label and data frame for the selected summary/statistics period."""
+    if df.empty:
+        return "empty dataset", df
+
+    max_dt = df["datetime"].max()
+
+    if period == "Selected day" and selected_day is not None:
+        period_df = df[df["date_only"] == selected_day].copy()
+        return selected_day.strftime("%Y-%m-%d"), period_df
+
+    if period == "Last 7 days":
+        return "last 7 days", df[df["datetime"] >= max_dt - timedelta(days=7)].copy()
+
+    if period == "Last 30 days":
+        return "last 30 days", df[df["datetime"] >= max_dt - timedelta(days=30)].copy()
+
+    # Default: latest reading only
+    return "latest reading", df.tail(1).copy()
+
+
+def ask_gemini(prompt: str, fallback: str) -> str:
+    """Call Gemini API with validation and stable fallback."""
+    if not (USE_GEMINI_SUMMARY and GEMINI_AVAILABLE and GEMINI_API_KEY):
+        return fallback
+
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        response = model.generate_content(prompt)
+
+        answer = ""
+        if response is not None and getattr(response, "text", None):
+            answer = response.text.strip().replace("\n", " ")
+
+        answer_lower = answer.lower().strip()
+        too_short = len(answer.split()) < 12
+        too_long = len(answer.split()) > 180
+        looks_like_letter = any(x in answer_lower for x in ["dear ", "sincerely", "best regards", "regards"])
+        incomplete_end = answer_lower.endswith(("you're", "you are", "is", "are", "and", "but", "with", "to", ",", ":", ";"))
+        missing_sentence_end = not answer.endswith((".", "!", "?"))
+
+        if answer and not too_short and not too_long and not looks_like_letter and not incomplete_end and not missing_sentence_end:
+            return answer
+
+        return fallback
+
+    except Exception:
+        return fallback
+
+
+def generate_ai_summary_for_period(label: str, period_df: pd.DataFrame, fallback: str, refresh_token: int) -> str:
+    """Generate AI summary for latest reading, selected day, week, or month."""
+    context = build_stats_context(period_df, label, period_df)
+
+    prompt = f"""
+You are an AI home climate assistant for a smart home IoT dashboard.
+
+Task:
+Write exactly 3 complete sentences based only on the provided data context.
+
+Rules:
+- Use only the data provided below.
+- Do not invent values.
+- Mention indoor comfort, air quality, and a practical recommendation.
+- If CO2 or TVOC are high, recommend ventilation.
+- If the period is longer than one reading, summarize trends and extremes.
+- Keep the tone clear, practical, and concise.
+
+Data context:
+{context}
+
+Refresh token: {refresh_token}
+"""
+    return ask_gemini(prompt, fallback)
+
+
+def generate_ai_assistant_answer(question: str, df: pd.DataFrame, latest: pd.Series) -> str:
+    """Gemini-based general assistant over sensor data, with compact evidence context."""
+    q = question.strip()
+    if not q:
+        return "Please ask a question about temperature, humidity, air quality, weather, clothing, motion, or statistics."
+
+    max_dt = df["datetime"].max()
+    last_24h = df[df["datetime"] >= max_dt - timedelta(days=1)].copy()
+    last_7d = df[df["datetime"] >= max_dt - timedelta(days=7)].copy()
+    last_30d = df[df["datetime"] >= max_dt - timedelta(days=30)].copy()
+
+    latest_context = {
+        "datetime": str(latest["datetime"]),
+        "indoor_temp": float(latest["indoor_temp"]),
+        "indoor_humidity": float(latest["indoor_humidity"]),
+        "outdoor_temp": float(latest["outdoor_temp"]),
+        "outdoor_humidity": float(latest["outdoor_humidity"]),
+        "outdoor_weather": str(latest["outdoor_weather"]),
+        "co2": float(latest["indoor_co2"]),
+        "tvoc": float(latest["indoor_tvoc"]),
+        "motion_detected": int(latest["motion_detected"] or 0),
+        "air_quality": classify_air_quality(latest["indoor_co2"], latest["indoor_tvoc"]),
+    }
+
+    evidence = {
+        "latest_reading": latest_context,
+        "last_24h_stats": json.loads(build_stats_context(df, "last 24 hours", last_24h)),
+        "last_7d_stats": json.loads(build_stats_context(df, "last 7 days", last_7d)),
+        "last_30d_stats": json.loads(build_stats_context(df, "last 30 days", last_30d)),
+    }
+
+    fallback = answer_assistant_question(q, latest, df, selected_date=None)
+
+    prompt = f"""
+You are an AI assistant for a smart home IoT weather dashboard.
+
+User question:
+{q}
+
+Evidence from BigQuery-loaded sensor data:
+{json.dumps(evidence, indent=2)}
+
+Instructions:
+- Answer using only the evidence above.
+- You may calculate or compare average, minimum, maximum, ranges, air-quality status, and practical recommendations.
+- If the user asks what to wear, use outdoor temperature and weather, and mention uncertainty.
+- If the user asks about a date not present in the evidence, say that the loaded dashboard data does not contain enough information.
+- Keep the answer concise: 1 to 4 sentences.
+- Do not invent measurements.
+"""
+    return ask_gemini(prompt, fallback)
+
+
+def make_stats_table(period_df: pd.DataFrame) -> pd.DataFrame:
+    """Build a readable statistics table for selected date/range."""
+    if period_df.empty:
+        return pd.DataFrame()
+
+    rows = [
+        ("Indoor temperature", "°C", period_df["indoor_temp"].mean(), period_df["indoor_temp"].min(), period_df["indoor_temp"].max()),
+        ("Outdoor temperature", "°C", period_df["outdoor_temp"].mean(), period_df["outdoor_temp"].min(), period_df["outdoor_temp"].max()),
+        ("Indoor humidity", "%", period_df["indoor_humidity"].mean(), period_df["indoor_humidity"].min(), period_df["indoor_humidity"].max()),
+        ("Outdoor humidity", "%", period_df["outdoor_humidity"].mean(), period_df["outdoor_humidity"].min(), period_df["outdoor_humidity"].max()),
+        ("CO₂", "ppm", period_df["indoor_co2"].mean(), period_df["indoor_co2"].min(), period_df["indoor_co2"].max()),
+        ("TVOC", "ppb", period_df["indoor_tvoc"].mean(), period_df["indoor_tvoc"].min(), period_df["indoor_tvoc"].max()),
+    ]
+
+    out = pd.DataFrame(rows, columns=["Metric", "Unit", "Average", "Minimum", "Maximum"])
+    for col in ["Average", "Minimum", "Maximum"]:
+        out[col] = out[col].map(lambda x: round(float(x), 2) if pd.notna(x) else None)
+    return out
 
 
 def speak_text_browser(text: str, enabled: bool = True) -> None:
@@ -735,26 +938,47 @@ with alert_col:
 
 with ai_col:
     st.subheader("🤖 AI Home Summary")
-    st.caption("Generated with Gemini API when enabled; otherwise a stable rule-based fallback is used.")
-    
-    if "summary_refresh_token" not in st.session_state:
-        st.session_state["summary_refresh_token"] = 0
 
-    if st.button("Regenerate AI summary"):
-        st.session_state["summary_refresh_token"] += 1
+    available_days = sorted(df["date_only"].dropna().unique())
 
-    ai_summary = generate_ai_home_summary_cached(
-        indoor_temp=float(latest["indoor_temp"]),
-        indoor_humidity=float(latest["indoor_humidity"]),
-        outdoor_temp=float(latest["outdoor_temp"]),
-        outdoor_humidity=float(latest["outdoor_humidity"]),
-        outdoor_weather=str(latest["outdoor_weather"]),
-        indoor_co2=float(latest["indoor_co2"]),
-        indoor_tvoc=float(latest["indoor_tvoc"]),
-        motion_detected=int(latest["motion_detected"] or 0),
-        air_quality=air_quality_status,
-        alerts_text="; ".join(alerts),
-        refresh_token=st.session_state["summary_refresh_token"],
+    if "summary_period_choice" not in st.session_state:
+        st.session_state["summary_period_choice"] = "Latest reading"
+
+    st.markdown("**Summary period**")
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        if st.button("Latest", use_container_width=True):
+            st.session_state["summary_period_choice"] = "Latest reading"
+    with p2:
+        if st.button("Last 7 days", use_container_width=True):
+            st.session_state["summary_period_choice"] = "Last 7 days"
+    with p3:
+        if st.button("Last month", use_container_width=True):
+            st.session_state["summary_period_choice"] = "Last 30 days"
+
+    selected_day_enabled = st.checkbox("Use selected date instead", value=False, key="summary_use_date")
+
+    summary_selected_day = None
+    if selected_day_enabled:
+        summary_selected_day = st.date_input(
+            "Choose date for AI summary",
+            value=available_days[-1] if available_days else date.today(),
+            min_value=available_days[0] if available_days else None,
+            max_value=available_days[-1] if available_days else None,
+            key="summary_selected_day",
+        )
+        summary_period = "Selected day"
+    else:
+        summary_period = st.session_state["summary_period_choice"]
+
+    summary_label, summary_df = select_summary_period(df, summary_period, summary_selected_day)
+
+    fallback_summary = generate_fallback_summary(latest)
+    ai_summary = generate_ai_summary_for_period(
+        label=summary_label,
+        period_df=summary_df,
+        fallback=fallback_summary,
+        refresh_token=hash((summary_period, str(summary_selected_day), str(latest["datetime"]))),
     )
 
     st.markdown(
@@ -767,49 +991,41 @@ st.markdown("---")
 # AI assistant
 st.subheader("🎙️ AI Assistant")
 st.caption(
-    "Choose or type a question manually, or use the microphone below. "
-    "Manual questions can use the selected date. Voice questions should include the date in the spoken sentence if needed."
+    "Ask naturally about temperature, humidity, air quality, clothing recommendations, motion, averages, minimums, maximums, or trends."
 )
 
-available_dates = sorted(df["date_only"].dropna().unique())
-default_assistant_date = available_dates[-1] if available_dates else date.today()
-
-assistant_date = st.date_input(
-    "Choose date for analytical questions",
-    value=default_assistant_date,
-    min_value=available_dates[0] if available_dates else None,
-    max_value=available_dates[-1] if available_dates else None,
-    help="Used for manual analytical questions. Voice questions ignore this field unless the date is spoken.",
-    key="assistant_date",
+st.markdown("**Type question:**")
+manual_question = st.text_input(
+    "Question",
+    value="What should I wear outside?",
+    label_visibility="collapsed",
+    placeholder="Ask about temperature, air quality, clothing, motion, averages, minimums, maximums or trends...",
 )
 
-selected_date_label = assistant_date.strftime("%B %d, %Y")
-example_questions = [
-    "What is the temperature now?",
-    "What is the humidity now?",
-    "Is air quality good?",
-    "Was motion detected?",
-    "Should I take an umbrella?",
-    f"What was the average temperature on {selected_date_label}?",
-    f"What was the minimum temperature on {selected_date_label}?",
-    f"What was the maximum temperature on {selected_date_label}?",
-    f"What was the average humidity on {selected_date_label}?",
-    f"What was the maximum CO2 level on {selected_date_label}?",
-]
+manual_col1, manual_col2 = st.columns([2, 1])
+with manual_col1:
+    ask_manual = st.button("✨ Ask AI Assistant", use_container_width=True)
+with manual_col2:
+    read_manual_answer = st.toggle("🔊 Read aloud", value=True, key="read_manual_answer")
 
-st.markdown("### Manual question")
-selected_question = st.selectbox("Choose a question", example_questions)
-manual_question = st.text_input("Or type your own question", value=selected_question)
-read_answer_aloud = st.checkbox("Read answer aloud", value=True, key="read_answer_aloud")
+if ask_manual:
+    assistant_answer = generate_ai_assistant_answer(manual_question, df, latest)
+    st.session_state["last_assistant_answer"] = assistant_answer
+    st.success(assistant_answer)
+    speak_text_browser(assistant_answer, enabled=read_manual_answer)
 
-if st.button("Ask assistant"):
-    manual_answer = answer_assistant_question(manual_question, latest, df, selected_date=assistant_date)
-    st.session_state["last_assistant_answer"] = manual_answer
-    st.success(manual_answer)
-    speak_text_browser(manual_answer, enabled=read_answer_aloud)
+st.markdown("### 🎤 Voice question")
+st.caption(
+    "Ask the AI Assistant. Click the microphone and ask a complete question. "
+    "The answer is generated by AI from the available sensor data."
+)
 
-st.markdown("### Voice question")
-st.caption("Record a full question, for example: 'What is the temperature now?' or 'What was the average temperature on May 18?'")
+voice_read_col, voice_hint_col = st.columns([1, 2])
+with voice_hint_col:
+    st.info("Record your question. The assistant will analyze the sensor data and respond automatically.")
+with voice_read_col:
+    read_voice_answer = st.toggle("🔊 Speak answer", value=True, key="read_voice_answer")
+
 
 spoken_question = None
 
@@ -819,35 +1035,90 @@ if MIC_RECORDER_AVAILABLE:
         use_container_width=True,
         just_once=True,
         key="speech_to_text_single_mode",
+        start_prompt="🎙️ Start recording",
+        stop_prompt="⏹️ Stop recording",
     )
 
     if spoken_question:
-        st.session_state["last_spoken_question"] = spoken_question
-        st.success(f"Recognized question: {spoken_question}")
+        voice_answer = generate_ai_assistant_answer(spoken_question, df, latest)
+        st.session_state["last_voice_answer"] = voice_answer
+        st.success(voice_answer)
+        speak_text_browser(voice_answer, enabled=read_voice_answer)
 else:
     st.warning(
         "Microphone input is not installed. Add `streamlit-mic-recorder` to requirements.txt "
         "and run: `pip install streamlit-mic-recorder`."
     )
 
-voice_question = st.session_state.get("last_spoken_question", "")
-
-if voice_question:
-    st.text_area("Recognized voice question", value=voice_question, height=80, disabled=True)
-
-if st.button("Ask from voice"):
-    if not voice_question:
-        st.warning("Please record a voice question first.")
-    else:
-        # Voice mode ignores selected date. The user should say the date in the question if needed.
-        voice_answer = answer_assistant_question(voice_question, latest, df, selected_date=None)
-        st.session_state["last_assistant_answer"] = voice_answer
-        st.success(voice_answer)
-        speak_text_browser(voice_answer, enabled=read_answer_aloud)
+if "last_voice_answer" in st.session_state:
+    st.markdown("**Last voice answer:**")
+    st.info(st.session_state["last_voice_answer"])
 
 if "last_assistant_answer" in st.session_state:
-    st.markdown("**Last assistant answer:**")
+    st.markdown("**Last typed answer:**")
     st.info(st.session_state["last_assistant_answer"])
+
+st.markdown("---")
+
+# Statistics explorer
+st.subheader("📅 Statistics Explorer")
+st.caption("Select a date or period to inspect calculated statistics from BigQuery-loaded sensor data.")
+
+available_days = sorted(df["date_only"].dropna().unique())
+
+if "stats_period_choice" not in st.session_state:
+    st.session_state["stats_period_choice"] = "Last 24 hours"
+
+st.markdown("**Statistics period**")
+s1, s2, s3 = st.columns(3)
+with s1:
+    if st.button("24h", use_container_width=True):
+        st.session_state["stats_period_choice"] = "Last 24 hours"
+with s2:
+    if st.button("7 days", use_container_width=True):
+        st.session_state["stats_period_choice"] = "Last 7 days"
+with s3:
+    if st.button("30 days", use_container_width=True):
+        st.session_state["stats_period_choice"] = "Last 30 days"
+
+stats_selected_day_enabled = st.checkbox("Use selected date instead", value=False, key="stats_use_date")
+
+stats_selected_day = None
+if stats_selected_day_enabled:
+    stats_selected_day = st.date_input(
+        "Choose day for statistics",
+        value=available_days[-1] if available_days else date.today(),
+        min_value=available_days[0] if available_days else None,
+        max_value=available_days[-1] if available_days else None,
+        key="stats_selected_day",
+    )
+    stats_mode = "Selected day"
+else:
+    stats_mode = st.session_state["stats_period_choice"]
+
+stats_label, stats_df = select_summary_period(df, stats_mode, stats_selected_day)
+
+if stats_df.empty:
+    st.warning(f"No data available for {stats_label}.")
+else:
+    stat_table = make_stats_table(stats_df)
+    st.dataframe(stat_table, use_container_width=True)
+
+    stat_kpi1, stat_kpi2, stat_kpi3, stat_kpi4 = st.columns(4)
+    stat_kpi1.metric("Measurements", len(stats_df))
+    stat_kpi2.metric("Motion events", int(stats_df["motion_detected"].fillna(0).sum()))
+    stat_kpi3.metric("Max CO₂", metric_value(stats_df["indoor_co2"].max(), " ppm", decimals=0))
+    stat_kpi4.metric("Max TVOC", metric_value(stats_df["indoor_tvoc"].max(), " ppb", decimals=0))
+
+    with st.expander("Show selected-period raw data"):
+        st.dataframe(
+            stats_df.sort_values("datetime", ascending=False)[[
+                "date", "time", "indoor_temp", "indoor_humidity",
+                "outdoor_temp", "outdoor_humidity", "outdoor_weather",
+                "indoor_co2", "indoor_tvoc", "motion_detected"
+            ]],
+            use_container_width=True,
+        )
 
 st.markdown("---")
 
