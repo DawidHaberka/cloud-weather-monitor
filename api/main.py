@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import requests
+from datetime import datetime
 
 try:
     import google.generativeai as genai
@@ -251,6 +253,76 @@ def answer_question(question: str, selected_date: Optional[str] = None) -> str:
         return current_answer
     return answer_analytical_question(question, selected_date)
 
+def get_three_day_forecast():
+    """
+    Fetches a 3-day weather forecast for Lausanne from OpenWeatherMap.
+    Uses 5-day / 3-hour forecast and selects one representative entry per future day.
+    """
+
+    api_key = os.getenv("OPENWEATHER_API_KEY")
+    if not api_key:
+        return {
+            "status": "error",
+            "message": "OPENWEATHER_API_KEY environment variable is not set",
+            "forecast": []
+        }
+
+    city = os.getenv("FORECAST_CITY", "Lausanne")
+
+    url = (
+        "https://api.openweathermap.org/data/2.5/forecast"
+        f"?q={city}&appid={api_key}&units=metric&cnt=40"
+    )
+
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        days_raw = {}
+
+        for item in data.get("list", []):
+            date = item["dt_txt"][:10]
+            hour = item["dt_txt"][11:13]
+
+            if date == today:
+                continue
+
+            if date not in days_raw:
+                days_raw[date] = {}
+
+            days_raw[date][hour] = item
+
+        forecast_days = []
+
+        for date, hours in sorted(days_raw.items())[:3]:
+            item = (
+                hours.get("12")
+                or hours.get("11")
+                or hours.get("13")
+                or list(hours.values())[0]
+            )
+
+            forecast_days.append({
+                "day": date,
+                "temp": round(item["main"]["temp"]),
+                "weather": item["weather"][0]["description"]
+            })
+
+        return {
+            "status": "success",
+            "city": city,
+            "forecast": forecast_days
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "forecast": []
+        }
 
 def stats_for_period(df, days: int) -> dict:
     if df.empty:
@@ -304,6 +376,10 @@ def gemini_answer(prompt: str, fallback: str) -> str:
     except Exception as e:
         return fallback
 
+@app.get("/forecast")
+def forecast():
+    return get_three_day_forecast()
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -349,33 +425,37 @@ def ask(payload: AskTextRequest) -> dict:
         raise HTTPException(status_code=404, detail="No data found")
 
     latest_row = df.iloc[-1].to_dict()
+    forecast_data = get_three_day_forecast()
 
     evidence = {
         "latest": {k: str(v) for k, v in latest_row.items()},
         "last_24h": stats_for_period(df, 1),
         "last_7d": stats_for_period(df, 7),
         "last_30d": stats_for_period(df, 30),
+        "forecast_next_3_days": forecast_data,
     }
 
     fallback = (
-        "Based on the available sensor data, I can answer questions about "
-        "temperature, humidity, air quality, motion, weather, clothing recommendations, "
-        "and summary statistics."
+        "Based on the available sensor data and 3-day forecast, I can answer questions about "
+        "temperature, humidity, air quality, motion, current weather, future weather, "
+        "clothing recommendations, umbrella recommendations and summary statistics."
     )
 
     prompt = f"""
-You are an AI assistant for a smart home IoT dashboard.
+You are an AI assistant for a smart home IoT dashboard in Lausanne.
 
 User question:
 {payload.question}
 
-Evidence from sensor data:
+Evidence from sensor data and forecast:
 {evidence}
 
 Instructions:
 - Use only the evidence above.
-- Answer questions about current temperature, humidity, air quality, motion, weather, clothing recommendations, averages, minimums, maximums and trends.
-- If the user asks what to wear, use outdoor temperature and weather.
+- For current conditions, use the latest sensor and weather measurements.
+- For questions about tomorrow, the next days, forecast, rain, umbrella or future clothing recommendations, use forecast_next_3_days.
+- For historical questions, use last_24h, last_7d or last_30d statistics.
+- If the user asks what to wear, combine outdoor temperature, weather and forecast when relevant.
 - If CO2 or TVOC are high, recommend ventilation.
 - If evidence is insufficient, say so clearly.
 - Keep the answer concise: 1 to 4 sentences.
@@ -386,4 +466,5 @@ Instructions:
     return {
         "question": payload.question,
         "answer": answer,
+        "forecast": forecast_data
     }
