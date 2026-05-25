@@ -7,7 +7,7 @@
 | Name | Role |
 |------|------|
 | *Selene Calzavara* | M5Stack device UI, sensors integration, TTS/STT, AI assistant, alert system, Cloud Run backend (Flask) |
-| *Dawid Haberka* | Streamlit cloud dashboard, FastAPI middleware API, BigQuery integration, Gemini AI assistant, 3-day forecast integration, Cloud Run deployment, GitHub/README setup |
+| *Dawid Haberka* | Streamlit cloud dashboard, FastAPI middleware API, BigQuery integration, Gemini AI assistant, Cloud Run deployment |
 
 ---
 
