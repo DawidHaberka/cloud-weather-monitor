@@ -4,6 +4,7 @@ import re
 import html
 import json
 from datetime import date, datetime, timedelta
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -510,6 +511,27 @@ Refresh token: {refresh_token}
 
 API_BASE_URL = os.getenv("API_BASE_URL", "").rstrip("/")
 
+
+def get_forecast_from_api() -> dict[str, Any]:
+    """Fetch 3-day weather forecast from the FastAPI middleware."""
+    if not API_BASE_URL:
+        return {
+            "status": "error",
+            "message": "API_BASE_URL environment variable is not configured.",
+            "forecast": [],
+        }
+
+    try:
+        response = requests.get(f"{API_BASE_URL}/forecast", timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": str(exc),
+            "forecast": [],
+        }
+
 def ask_middleware_api(question: str, selected_date=None) -> str:
     """Call FastAPI middleware deployed on Cloud Run."""
     if not API_BASE_URL or not question or not question.strip():
@@ -938,6 +960,44 @@ col5.metric("🫁 CO₂", metric_value(latest["indoor_co2"], " ppm", decimals=0)
 col6.metric("🧪 TVOC", metric_value(latest["indoor_tvoc"], " ppb", decimals=0))
 col7.metric("🍃 Air Quality", air_quality_status)
 col8.metric("👤 Motion", "Detected" if int(latest["motion_detected"] or 0) == 1 else "No motion")
+
+
+# 3-day weather forecast from middleware API
+st.subheader("🌤️ 3-Day Weather Forecast")
+
+forecast_data = get_forecast_from_api()
+
+if forecast_data.get("status") == "success" and forecast_data.get("forecast"):
+    forecast_cols = st.columns(3)
+
+    for forecast_col, forecast_item in zip(forecast_cols, forecast_data["forecast"]):
+        with forecast_col:
+            weather_text = str(forecast_item.get("weather", "Unknown")).title()
+            weather_lower = weather_text.lower()
+
+            if "rain" in weather_lower or "drizzle" in weather_lower:
+                weather_icon = "🌧️"
+            elif "storm" in weather_lower or "thunder" in weather_lower:
+                weather_icon = "⛈️"
+            elif "snow" in weather_lower:
+                weather_icon = "❄️"
+            elif "cloud" in weather_lower:
+                weather_icon = "☁️"
+            elif "clear" in weather_lower or "sun" in weather_lower:
+                weather_icon = "☀️"
+            else:
+                weather_icon = "🌤️"
+
+            st.metric(
+                label=forecast_item.get("day", "Next day"),
+                value=f"{forecast_item.get('temp', 'N/A')}°C",
+            )
+            st.markdown(f"**{weather_icon} {weather_text}**")
+else:
+    st.warning(
+        "Forecast is currently unavailable. "
+        f"{forecast_data.get('message', 'Please check the API configuration.')}"
+    )
 
 st.markdown("---")
 
