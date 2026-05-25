@@ -282,8 +282,6 @@ For the in-class presentation, connect to `iot-unil`.
 | GEMINI_API_KEY | Gemini API key |
 | GEMINI_MODEL_NAME | Gemini model name |
 
-> ⚠️ Never commit API keys, service account JSON files, WiFi passwords or password hashes to the repository. Store them as Cloud Run environment variables or in local ignored config files.
-
 ---
 
 ## 🔌 Hardware Components
