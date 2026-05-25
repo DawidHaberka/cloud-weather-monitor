@@ -48,10 +48,10 @@
 The project follows a *3-tier architecture*:
 
 ```text
-┌────────────────────────────┐     ┌────────────────────────────┐     ┌──────────────┐
+┌────────────────────────────┐     ┌────────────────────────────┐     ┌──────────────────┐
 │  M5Stack Core2 / Dashboard │────▶️│ Cloud Run Middleware APIs   │────▶️│   BigQuery   │
 │  Device UI + Streamlit UI  │◀️────│ Flask + FastAPI REST APIs   │◀️────│  (Storage)   │
-└────────────────────────────┘     └────────────────────────────┘     └──────────────┘
+└────────────────────────────┘     └────────────────────────────┘      └─────────────────┘
           │                                      │
           │ UIFlow MicroPython                   ├── OpenWeatherMap API (weather + forecast)
           │ Streamlit Cloud Dashboard            ├── OpenAI TTS nova (text → WAV audio)
