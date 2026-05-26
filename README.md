@@ -13,7 +13,7 @@
 
 ## 📽️ Demo Video
 
-> 🎬 [YouTube link — coming soon]
+> 🎬 https://youtu.be/oi4xvm_lhag
 
 ---
 
