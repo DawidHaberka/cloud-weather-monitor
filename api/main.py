@@ -18,6 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google.cloud import bigquery
 
+# Cloud configuration.
+# Values are read from environment variables in Cloud Run.
+# Defaults are kept for local testing and easier deployment.
 PROJECT_ID = os.getenv("GCP_PROJECT_ID", "durable-will-487916-n1")
 BQ_LOCATION = os.getenv("BQ_LOCATION", "europe-west6")
 BQ_TABLE = os.getenv(
@@ -25,12 +28,16 @@ BQ_TABLE = os.getenv(
     "durable-will-487916-n1.Lab4_IoT_datasets.weather-records",
 )
 
+# FastAPI application used as the middleware layer.
+# The dashboard calls this API instead of connecting directly to BigQuery, Gemini or OpenWeatherMap.
 app = FastAPI(
     title="Smart Home Weather Monitor API",
     description="Middleware layer for M5Stack, Streamlit, BigQuery and AI assistant.",
     version="1.0.0",
 )
 
+# CORS allows the Streamlit dashboard and other clients to call this API.
+# In production, allow_origins could be restricted to the dashboard URL.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,6 +46,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Pydantic models define the expected request and response structure.
+# This helps FastAPI validate incoming JSON automatically.
 class AskTextRequest(BaseModel):
     question: str
     selected_date: Optional[str] = None  # YYYY-MM-DD fallback date
@@ -51,12 +60,14 @@ class AskTextResponse(BaseModel):
 class LatestResponse(BaseModel):
     data: dict[str, Any]
 
-
+# Creates a BigQuery client using the Google Cloud project and location.
 def get_bq_client() -> bigquery.Client:
     return bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
 
-
+# Loads the latest sensor and weather records from BigQuery.
+# The data is converted into a pandas DataFrame because it is easier to calculate statistics later.
 def load_data(limit: int = 1000) -> pd.DataFrame:
+    # Query only the columns needed by the dashboard and AI assistant.
     query = f"""
         SELECT
             date,
@@ -79,11 +90,13 @@ def load_data(limit: int = 1000) -> pd.DataFrame:
     df = get_bq_client().query(query, job_config=job_config).to_dataframe()
     if df.empty:
         return df
+    # Combine date and time into one datetime column for sorting and period-based filtering.
     df["datetime"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), errors="coerce")
     df["date_only"] = pd.to_datetime(df["date"], errors="coerce").dt.date
     return df.sort_values("datetime")
 
-
+# Converts pandas/date values into JSON-safe Python values.
+# This is needed because FastAPI cannot directly return pandas Timestamp or NumPy values.
 def json_safe(value: Any) -> Any:
     if pd.isna(value):
         return None
@@ -96,7 +109,8 @@ def json_safe(value: Any) -> Any:
     except AttributeError:
         return value
 
-
+# Returns the most recent record from BigQuery.
+# This endpoint is used by the dashboard and can also be used by the device after restart.
 def latest_record() -> dict[str, Any]:
     df = load_data(limit=1)
     if df.empty:
@@ -118,7 +132,9 @@ MONTHS = {
     "december": 12, "dec": 12,
 }
 
-
+# Extracts a date from a user question.
+# Supported formats include YYYY-MM-DD, "16 May" and "May 16".
+# If no date is found, the selected_date from the request can be used as fallback.
 def parse_date_from_question(question: str, fallback: Optional[str] = None) -> Optional[date]:
     q = question.lower().strip()
     current_year = datetime.now().year
@@ -149,7 +165,8 @@ def parse_date_from_question(question: str, fallback: Optional[str] = None) -> O
             return None
     return None
 
-
+# Detects which sensor metric the user is asking about.
+# This is used by the rule-based /ask-text endpoint.
 def detect_metric(question: str) -> str:
     q = question.lower()
     if "humidity" in q:
@@ -162,7 +179,7 @@ def detect_metric(question: str) -> str:
         return "outdoor_temp"
     return "indoor_temp"
 
-
+# Detects whether the user asks for an average, minimum or maximum value.
 def detect_operation(question: str) -> str:
     q = question.lower()
     if "minimum" in q or "lowest" in q or "min" in q:
@@ -171,7 +188,8 @@ def detect_operation(question: str) -> str:
         return "max"
     return "average"
 
-
+# Handles simple current-condition questions without calling Gemini.
+# This provides a deterministic fallback for basic questions.
 def answer_current_question(question: str, row: dict[str, Any]) -> Optional[str]:
     q = question.lower()
 
@@ -243,7 +261,8 @@ def answer_analytical_question(question: str, selected_date: Optional[str]) -> s
 
     return f"On {target_date.isoformat()}, based on {len(values)} measurements, the {label} {readable_metric} was {result:.2f}{unit}."
 
-
+# Rule-based question answering pipeline.
+# It first tries to answer current-condition questions, then falls back to date-based analysis.
 def answer_question(question: str, selected_date: Optional[str] = None) -> str:
     if not question or not question.strip():
         return "Please ask a question."
@@ -255,8 +274,11 @@ def answer_question(question: str, selected_date: Optional[str] = None) -> str:
 
 def get_three_day_forecast():
     """
-    Fetches a 3-day weather forecast for Lausanne from OpenWeatherMap.
-    Uses 5-day / 3-hour forecast and selects one representative entry per future day.
+    Fetch a 3-day forecast for Lausanne from OpenWeatherMap.
+
+    OpenWeatherMap returns 3-hour forecast entries.
+    The function groups them by date, skips today, and selects one representative
+    forecast entry per future day, preferably around 12:00 UTC.
     """
 
     api_key = os.getenv("OPENWEATHER_API_KEY")
@@ -323,13 +345,16 @@ def get_three_day_forecast():
             "message": str(e),
             "forecast": []
         }
-
+        
+# Calculates summary statistics for a selected rolling period.
+# Used by /stats and by the Gemini prompt as historical context.
 def stats_for_period(df, days: int) -> dict:
     if df.empty:
         return {}
 
     from datetime import timedelta
-
+    
+    # Use the newest available timestamp as the reference point for the rolling window.
     max_dt = df["datetime"].max()
     period_df = df[df["datetime"] >= max_dt - timedelta(days=days)].copy()
 
@@ -354,11 +379,13 @@ def stats_for_period(df, days: int) -> dict:
         "motion_events": int(period_df["motion_detected"].fillna(0).sum()),
     }
 
-
+# Sends the prepared prompt to Gemini.
+# If Gemini is not configured or fails, the function returns a safe fallback answer.
 def gemini_answer(prompt: str, fallback: str) -> str:
     api_key = os.getenv("GEMINI_API_KEY")
     model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash")
-
+    
+    # Keep the API stable even when Gemini API key is missing.
     if not api_key or genai is None:
         return fallback
 
@@ -376,23 +403,30 @@ def gemini_answer(prompt: str, fallback: str) -> str:
     except Exception as e:
         return fallback
 
+# Public endpoint used by the dashboard to display the 3-day forecast.
 @app.get("/forecast")
 def forecast():
     return get_three_day_forecast()
 
+# Health check endpoint used to verify that the Cloud Run service is running.
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
+# Returns the newest BigQuery record as JSON.
 @app.get("/latest", response_model=LatestResponse)
 def latest() -> LatestResponse:
     return LatestResponse(data=latest_record())
 
+# Optional rule-based text endpoint.
+# It is kept as a deterministic fallback, while /ask is the main Gemini endpoint.
 @app.post("/ask-text", response_model=AskTextResponse)
 def ask_text(payload: AskTextRequest) -> AskTextResponse:
     answer = answer_question(payload.question, payload.selected_date)
     return AskTextResponse(question=payload.question, answer=answer)
 
+# Placeholder endpoint for audio upload testing.
+# Final voice interaction is handled by the dashboard/device layer.
 @app.post("/ask-audio")
 async def ask_audio(audio: UploadFile = File(...)) -> dict[str, Any]:
     content = await audio.read()
@@ -403,6 +437,7 @@ async def ask_audio(audio: UploadFile = File(...)) -> dict[str, Any]:
         "message": "Audio upload works. Speech-to-text will be added in the next step."
     }
 
+# Returns historical summary statistics for the dashboard.
 @app.get("/stats")
 def stats():
     df = load_data()
@@ -418,15 +453,25 @@ def stats():
 
 
 
+# Main AI assistant endpoint.
+# It combines latest sensor data, historical statistics and forecast data,
+# then sends this structured evidence to Gemini.
 @app.post("/ask")
 def ask(payload: AskTextRequest) -> dict:
+    
+    # Load recent BigQuery data. This is the factual base for the assistant.
     df = load_data()
     if df.empty:
         raise HTTPException(status_code=404, detail="No data found")
-
+    
+    # Use the latest measurement for current-condition questions.
     latest_row = df.iloc[-1].to_dict()
+
+    # Fetch live forecast so Gemini can answer future-weather questions.
     forecast_data = get_three_day_forecast()
 
+    # Build one evidence object containing all information Gemini is allowed to use.
+    # This reduces hallucination because the model receives structured project data.
     evidence = {
         "latest": {k: str(v) for k, v in latest_row.items()},
         "last_24h": stats_for_period(df, 1),
@@ -460,7 +505,8 @@ Instructions:
 - If evidence is insufficient, say so clearly.
 - Keep the answer concise: 1 to 4 sentences.
 """
-
+    
+    # Generate the final natural-language answer.
     answer = gemini_answer(prompt, fallback)
 
     return {
