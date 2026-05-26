@@ -16,10 +16,10 @@ from flask import Flask, request
 import os
 from google.cloud import bigquery
 import requests
-from datetime import datetime
 from openai import OpenAI
 import io
 from flask import send_file, jsonify
+from datetime import datetime, timedelta, timezone
 
 # ============================================================
 # CLIENT INITIALIZATION
@@ -450,7 +450,8 @@ def get_forecast():
         try:
             response = requests.get(url)
             data = response.json()
-            today = datetime.now().strftime("%Y-%m-%d")
+            tz_swiss = timezone(timedelta(hours=2))
+            today = datetime.now(tz_swiss).strftime("%Y-%m-%d") #swiss timezone
             
             # Group all forecast entries by date and hour
             # Structure: {date: {hour: item, ...}, ...}
@@ -585,7 +586,7 @@ def ask():
     # Current sensor data, historical data, and forecast are all included as context.
     # max 10 words ensures the answer fits in the AI answer box on the device screen.
     prompt = f"""You are a smart home weather and environment assistant.
-Answer in max 10 words when answering weather questions.
+Answer in max 10 words when answering weather questions. Today is {today}.
 
 Current data:
 - Indoor temp: {context.get('in_temp')}C
