@@ -1,4 +1,4 @@
-# Smart Home Weather Monitor — Cloud Analytics Project
+# Smart Home Weather Monitor - Cloud Analytics Project
 
 ---
 
@@ -31,7 +31,7 @@
 │   └── requirements.txt     # Python dependencies for dashboard
 ├── device/
 │   ├── main.py              # MicroPython UIFlow code for M5Stack Core2
-│   └── config.py            # Device credentials (NOT included in Git — see .gitignore)
+│   └── config.py            # Device credentials (NOT included in Git  see .gitignore)
 ├── server/
 │   ├── main.py              # Flask backend deployed on Google Cloud Run for M5Stack communication
 │   ├── Dockerfile           # Container configuration for Cloud Run
@@ -72,9 +72,9 @@ The third layer is the *user interface layer*, consisting of the M5Stack Core2 d
 
 ### Device (M5Stack Core2)
 
-- *Screen 1 — Dashboard*: real-time indoor temperature and humidity (ENV3 sensor), CO2 and TVOC air quality with gradient bar (GOOD/MODERATE/POOR), outdoor temperature and weather with custom drawn icons. Clock and date synced via NTP and kept by the internal RTC.
-- *Screen 2 — Forecast + AI*: 3-day weather forecast with large weather icons (always shown in daytime mode since data is at 14:00 local time). AI voice assistant activated by touchscreen — touch the microphone button, speak a question, get a voice answer powered by GPT-4o-mini.
-- *Screen 3 — History*: last 5 records fetched from BigQuery with color-coded CO2 and TVOC values (green/yellow/red).
+- *Screen 1 - Dashboard*: real-time indoor temperature and humidity (ENV3 sensor), CO2 and TVOC air quality with gradient bar (GOOD/MODERATE/POOR), outdoor temperature and weather with custom drawn icons. Clock and date synced via NTP and kept by the internal RTC.
+- *Screen 2 - Forecast + AI*: 3-day weather forecast with large weather icons (always shown in daytime mode since data is at 14:00 local time). AI voice assistant activated by touchscreen - touch the microphone button, speak a question, get a voice answer powered by GPT-4o-mini.
+- *Screen 3 - History*: last 5 records fetched from BigQuery with color-coded CO2 and TVOC values (green/yellow/red).
 - *Smart Alerts*: visual popup + voice announcements triggered by sensor threshold breaches:
   - CO2 > 1200 ppm → poor air quality (max once per hour)
   - CO2 750–1200 ppm → moderate air quality (max once per hour)
@@ -249,9 +249,9 @@ Hold the side button on startup to access the UIFlow WiFi configuration menu.
 
 | Variable | Description |
 |----------|-------------|
-| OPENAI_API_KEY | OpenAI API key — used for TTS (`/speak`), STT (`/transcribe`), and LLM (`/ask`) |
-| OPENWEATHER_API_KEY | OpenWeatherMap API key — used in `/send-to-bigquery`, `/get_forecast`, `/ask` |
-| HASH_PASSWD | SHA-256 hash of the shared device password — used to authenticate all requests |
+| OPENAI_API_KEY | OpenAI API key - used for TTS (`/speak`), STT (`/transcribe`), and LLM (`/ask`) |
+| OPENWEATHER_API_KEY | OpenWeatherMap API key - used in `/send-to-bigquery`, `/get_forecast`, `/ask` |
+| HASH_PASSWD | SHA-256 hash of the shared device password - used to authenticate all requests |
 
 ### FastAPI Middleware
 
@@ -280,10 +280,10 @@ Hold the side button on startup to access the UIFlow WiFi configuration menu.
 
 | Component | Connection | Function |
 |-----------|-----------|----------|
-| M5Stack Core2 | — | Main IoT device with 320×240 touchscreen and internal speaker/microphone |
+| M5Stack Core2 | - | Main IoT device with 320×240 touchscreen and internal speaker/microphone |
 | ENVIII Sensor | Port A | Indoor temperature (°C) and humidity (%) |
 | TVOC/eCO2 Sensor | Pins 14, 13 | Indoor air quality: estimated CO2 (ppm) and Total VOC (ppb) |
-| PIR Motion Sensor | Port B | Presence detection — triggers contextual voice announcements |
+| PIR Motion Sensor | Port B | Presence detection - triggers contextual voice announcements |
 
 ---
 
