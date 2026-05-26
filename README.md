@@ -234,7 +234,7 @@ The values that need to be configured are:
 ```python
 URL_CLOUD_RUN = "https://<your-cloud-run-url>"
 YOUR_HASH_PASSWD = "<your_sha256_hash>"
-
+```
 
 ### 6. Change WiFi on Device
 
