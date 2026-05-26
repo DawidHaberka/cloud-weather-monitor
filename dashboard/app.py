@@ -29,9 +29,8 @@ except ImportError:
 # =========================================================
 # CONFIGURATION
 # =========================================================
-# For local testing you can set this environment variable before running Streamlit:
-# export GOOGLE_APPLICATION_CREDENTIALS="path/to/your-service-account.json"
-# Do NOT commit the service account JSON file to GitHub.
+# Cloud and application configuration.
+# Values are read from environment variables in Cloud Run, with defaults for local development.
 
 PROJECT_ID = os.getenv("GCP_PROJECT_ID", "durable-will-487916-n1")
 BQ_LOCATION = os.getenv("BQ_LOCATION", "europe-west6")
@@ -71,6 +70,7 @@ if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
 # =========================================================
 # PAGE SETUP
 # =========================================================
+# Streamlit page configuration and custom CSS styling.
 st.set_page_config(
     page_title="Smart Home IoT Weather Monitor",
     page_icon="🌤️",
@@ -168,10 +168,13 @@ st.markdown(
 # =========================================================
 # DATA LOADING
 # =========================================================
+# Load recent sensor and weather data from BigQuery.
+# The result is cached briefly to keep the dashboard responsive.
 @st.cache_data(ttl=10)
 def load_data(days_back: int = QUERY_DAYS_BACK, limit: int = QUERY_LIMIT) -> pd.DataFrame:
     client = bigquery.Client(project=PROJECT_ID, location=BQ_LOCATION)
-
+    
+    # Query only the columns needed for metrics, charts, alerts and AI context.
     query = f"""
         SELECT
             date,
@@ -194,7 +197,8 @@ def load_data(days_back: int = QUERY_DAYS_BACK, limit: int = QUERY_LIMIT) -> pd.
 
     if df.empty:
         return df
-
+        
+    # Create datetime fields used for sorting, filtering and time-based statistics.
     df["datetime"] = pd.to_datetime(
         df["date"].astype(str) + " " + df["time"].astype(str),
         errors="coerce",
@@ -202,6 +206,7 @@ def load_data(days_back: int = QUERY_DAYS_BACK, limit: int = QUERY_LIMIT) -> pd.
     df["date_only"] = pd.to_datetime(df["date"].astype(str), errors="coerce").dt.date
     df = df.dropna(subset=["datetime", "date_only"]).sort_values("datetime")
 
+    # Convert sensor columns to numeric values so calculations and charts work reliably.
     numeric_columns = [
         "indoor_temp",
         "indoor_humidity",
@@ -221,6 +226,7 @@ def load_data(days_back: int = QUERY_DAYS_BACK, limit: int = QUERY_LIMIT) -> pd.
 # =========================================================
 # BUSINESS LOGIC
 # =========================================================
+# Classify indoor air quality based on CO2 and TVOC thresholds.
 def classify_air_quality(co2: float, tvoc: float) -> str:
     if pd.isna(co2) or pd.isna(tvoc):
         return "Unknown"
@@ -230,7 +236,8 @@ def classify_air_quality(co2: float, tvoc: float) -> str:
         return "Moderate"
     return "Good"
 
-
+# Generate user-facing alerts from the latest sensor record.
+# Alerts are based on humidity, air quality, weather and motion.
 def get_alerts(row: pd.Series) -> list[str]:
     alerts = []
 
@@ -268,7 +275,8 @@ def get_system_status(alerts: list[str]) -> tuple[str, str]:
         return "Warning", "status-warning"
     return "OK", "status-ok"
 
-
+# Rule-based summary used when Gemini is disabled or unavailable.
+# This keeps the dashboard useful even without AI access.
 def generate_fallback_summary(row: pd.Series) -> str:
     """Deterministic backup summary used when Gemini is not configured."""
     air_quality = classify_air_quality(row["indoor_co2"], row["indoor_tvoc"])
@@ -300,7 +308,8 @@ def generate_fallback_summary(row: pd.Series) -> str:
         f"and TVOC is {row['indoor_tvoc']:.0f} ppb. {air_text} {weather_text} {motion_text}"
     )
 
-
+# Generate a short AI home summary from the latest sensor values.
+# If Gemini fails or returns a weak answer, the dashboard falls back to a stable rule-based summary.
 def generate_ai_home_summary_cached(
     indoor_temp: float,
     indoor_humidity: float,
@@ -403,7 +412,8 @@ Current alerts: {alerts_text}
         # Keep the UI stable by showing fallback summary if Gemini is unavailable.
         return fallback_summary
 
-
+# Build compact statistical context for Gemini.
+# This prevents sending the full dataset and keeps the prompt focused.
 def build_stats_context(df: pd.DataFrame, label: str, period_df: pd.DataFrame) -> str:
     """Create compact factual context for Gemini based only on available data."""
     if period_df.empty:
@@ -481,7 +491,7 @@ def ask_gemini(prompt: str, fallback: str) -> str:
     except Exception:
         return fallback
 
-
+# Generate an AI summary for the selected period using calculated BigQuery statistics.
 def generate_ai_summary_for_period(label: str, period_df: pd.DataFrame, fallback: str, refresh_token: int) -> str:
     """Generate AI summary for latest reading, selected day, week, or month."""
     context = build_stats_context(period_df, label, period_df)
@@ -507,11 +517,12 @@ Refresh token: {refresh_token}
 """
     return ask_gemini(prompt, fallback)
 
-
-
+# URL of the FastAPI middleware.
+# The dashboard uses it to request forecast data and AI answers.
 API_BASE_URL = os.getenv("API_BASE_URL", "").rstrip("/")
 
-
+# Fetch the 3-day weather forecast from the FastAPI middleware.
+# The dashboard does not call OpenWeatherMap directly.
 def get_forecast_from_api() -> dict[str, Any]:
     """Fetch 3-day weather forecast from the FastAPI middleware."""
     if not API_BASE_URL:
@@ -531,7 +542,9 @@ def get_forecast_from_api() -> dict[str, Any]:
             "message": str(exc),
             "forecast": [],
         }
-
+        
+# Send user questions to the FastAPI /ask endpoint.
+# This is the preferred AI path because the API combines BigQuery data, statistics and forecast.
 def ask_middleware_api(question: str, selected_date=None) -> str:
     """Call FastAPI middleware deployed on Cloud Run."""
     if not API_BASE_URL or not question or not question.strip():
@@ -548,6 +561,8 @@ def ask_middleware_api(question: str, selected_date=None) -> str:
     except Exception:
         return ""
 
+# Local dashboard fallback for AI assistant answers.
+# Used only if the FastAPI middleware does not return an answer.
 def generate_ai_assistant_answer(question: str, df: pd.DataFrame, latest: pd.Series) -> str:
     """Gemini-based general assistant over sensor data, with compact evidence context."""
     q = question.strip()
@@ -600,7 +615,7 @@ Instructions:
 """
     return ask_gemini(prompt, fallback)
 
-
+# Build a clean statistics table for the selected period.
 def make_stats_table(period_df: pd.DataFrame) -> pd.DataFrame:
     """Build a readable statistics table for selected date/range."""
     if period_df.empty:
@@ -620,7 +635,8 @@ def make_stats_table(period_df: pd.DataFrame) -> pd.DataFrame:
         out[col] = out[col].map(lambda x: round(float(x), 2) if pd.notna(x) else None)
     return out
 
-
+# Use the browser Web Speech API to read assistant answers aloud.
+# This avoids needing a separate backend TTS call for the dashboard.
 def speak_text_browser(text: str, enabled: bool = True) -> None:
     """Read text aloud in the browser using the Web Speech API."""
     if not enabled or not text:
@@ -642,7 +658,8 @@ def speak_text_browser(text: str, enabled: bool = True) -> None:
         """,
         height=0,
     )
-
+    
+# Parse simple dates from user questions for date-based statistics.
 def parse_requested_date(question: str, default_year: int) -> date | None:
     """Parse simple English dates from questions, e.g. '16 May', 'May 16', or '2026-05-16'."""
     q = question.lower()
@@ -698,7 +715,7 @@ def parse_requested_date(question: str, default_year: int) -> date | None:
 
     return None
 
-
+# Detect whether the user asks for average, minimum, maximum or a summary.
 def detect_statistic(question: str) -> str:
     """Detect whether the user asks for average, minimum, maximum, or a full summary."""
     q = question.lower()
@@ -710,7 +727,7 @@ def detect_statistic(question: str) -> str:
         return "average"
     return "summary"
 
-
+# Detect which sensor metric the user asks about.
 def detect_metric(question: str) -> tuple[str | None, str | None]:
     """Return the dataframe column and a readable metric name based on the question."""
     q = question.lower()
@@ -823,7 +840,8 @@ def summarize_humidity_for_date(df: pd.DataFrame, requested_date: date) -> str:
         f"Humidity was below 40% in {below_threshold} measurements."
     )
 
-
+# Rule-based assistant fallback.
+# It answers common questions directly from the loaded BigQuery data when AI is unavailable.
 def answer_assistant_question(question: str, row: pd.Series, df: pd.DataFrame, selected_date: date | None = None) -> str:
     q = question.lower().strip()
     air_quality = classify_air_quality(row["indoor_co2"], row["indoor_tvoc"])
@@ -898,7 +916,7 @@ def metric_value(value, suffix="", decimals=1):
         return f"{value:.{decimals}f}{suffix}"
     return str(value)
 
-
+# Filter historical data for the selected chart range.
 def filter_history(df: pd.DataFrame, selected_range: str) -> pd.DataFrame:
     max_dt = df["datetime"].max()
     if selected_range == "Last 24 hours":
@@ -916,6 +934,8 @@ def filter_history(df: pd.DataFrame, selected_range: str) -> pd.DataFrame:
 # =========================================================
 # DASHBOARD
 # =========================================================
+# Main dashboard data loading.
+# If BigQuery is unavailable or empty, the app stops with a clear message.
 try:
     with st.spinner("Fetching the latest data from BigQuery..."):
         df = load_data()
@@ -947,6 +967,7 @@ with update_col:
 st.markdown("---")
 
 # Current conditions
+# Current conditions section: latest sensor and weather values.
 st.subheader("🏠 Current Conditions")
 
 col1, col2, col3, col4 = st.columns(4)
@@ -962,7 +983,8 @@ col7.metric("🍃 Air Quality", air_quality_status)
 col8.metric("👤 Motion", "Detected" if int(latest["motion_detected"] or 0) == 1 else "No motion")
 
 
-# 3-day weather forecast from middleware API
+# 3-day weather forecast section.
+# Data is fetched from the FastAPI middleware, which calls OpenWeatherMap.
 st.subheader("🌤️ 3-Day Weather Forecast")
 
 forecast_data = get_forecast_from_api()
@@ -1001,7 +1023,8 @@ else:
 
 st.markdown("---")
 
-# Alerts + AI summary
+# Alerts and AI summary section.
+# Alerts are deterministic, while the summary can use Gemini or fallback logic.
 alert_col, ai_col = st.columns([1, 2])
 
 with alert_col:
