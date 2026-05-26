@@ -294,3 +294,11 @@ All sensitive credentials are excluded from Git. API keys are stored as Google C
 The M5Stack Flask endpoints require a password hash sent in the request body through the `"passwd"` field. The server compares it against the `HASH_PASSWD` environment variable. Plain-text passwords are not stored in the repository.
 
 The Streamlit dashboard communicates with the FastAPI middleware using the `API_BASE_URL` environment variable, so the dashboard does not need to hard-code backend URLs or secrets directly in the source code.
+
+---
+
+## 🤖 AI-Assisted Development
+
+During the project, we used AI tools such as Google Gemini Pro and OpenAI ChatGPT to support coding, debugging, documentation and architecture design. These tools helped us structure the FastAPI and Flask backends, improve the Streamlit dashboard, debug deployment issues and prepare clearer documentation.
+
+However, the final code was reviewed, adapted, tested and integrated by the team. AI was used as a development assistant, not as a replacement for understanding or validating the implementation.
