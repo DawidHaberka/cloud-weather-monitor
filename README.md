@@ -11,7 +11,7 @@
 
 ---
 
-## 📽️ Demo Video
+## 📽️ YouTube Video
 
 > 🎬 https://youtu.be/oi4xvm_lhag
 
