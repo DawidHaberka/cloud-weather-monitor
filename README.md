@@ -227,27 +227,19 @@ gcloud run deploy smart-home-dashboard \
 
 ### 5. Configure the Device
 
-Create a `device/config.py` file. This file is in `.gitignore` and must NOT be committed:
+Before flashing the device code to the M5Stack Core2, update the configuration values directly in the device `main.py` file.
+
+The values that need to be configured are:
 
 ```python
-# config.py — do NOT include in Git
-URL_CLOUD_RUN    = "https://<your-cloud-run-url>"
+URL_CLOUD_RUN = "https://<your-cloud-run-url>"
 YOUR_HASH_PASSWD = "<your_sha256_hash>"
-```
 
-The device `main.py` imports these values with:
-
-```python
-from config import URL_CLOUD_RUN, YOUR_HASH_PASSWD
-```
-
-Flash `main.py` and `config.py` to the M5Stack Core2 using UIFlow.
 
 ### 6. Change WiFi on Device
 
 Hold the side button on startup to access the UIFlow WiFi configuration menu.
 
-For the in-class presentation, connect to `iot-unil`.
 
 ---
 
