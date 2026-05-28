@@ -17,6 +17,12 @@
 
 ---
 
+## 📊 Dashboard
+
+> 🎛️ https://smart-home-dashboard-gx3yu6fsxa-oa.a.run.app/
+
+---
+
 ## 📁 Project Structure
 
 ```text
